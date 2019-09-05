@@ -8,26 +8,30 @@ As with the WBI, only bridge nodes have access to both Witnet and Ethereum chain
 
 - **Integrity of the Block header**: the reporting protocol needs to guarantee the integrity and validity of the block header reported.
 - **Economic incentives**: the reporters should be economically incentivized to post correct block headers in the Block Relay contract.
-- **Chain reconciliations**: the Block Relay should be able to recover from chain reconciliations in which the tip of the chain changed or was wrongly reported.
+- **Handle chain forks**: the Block Relay should be able to recover from chain forks in which the tip of the chain diverges.
 
 ## Block Header Integrity: the problem
 
-Recall Witnet does not feature a PoW nor PoS consensus mechanisms, but rather it utilizes cryptographic sortition with biased probabilities depending on past behavior. The trustlessness property is thus more difficult to achieve as we cannot simply look at the chain with the longest amount of work. We could simply let all bridge nodes report what they consider the latest valid block. The problem with this approach is that is easily sybileable, and it could lead to the following security concerns:
+Recall Witnet does not feature a PoW nor PoS consensus mechanisms, but rather it utilizes cryptographic sortition with biased probabilities depending on past behavior. The trustlessness property is thus more difficult to achieve as we cannot simply look at the chain with the longest amount of work/stake. Simplifying, we need a groups of nodes to agree on the particular block header in a non-synchronous network. This traditionally has been resolved by Bizantyne Fault Tolerance algorithms, that ensure that if there are no more than f number of attackers, the network is going to achieve liveness and safety properties. The are implications of a malicious header being inserted in the block relay severe, as:
 
-1. Imagine an attacker controls half plus one bridge nodes from the entire bridge node set. In this case, she can insert whatever header is more convenient to her.
-2. She can preconstruct a header including a result of a data request of her interest that was previously posted to the WBI. She can even make up a beneficial Active Reputation Set (ARS) and report it with the header. She reports the block header to the Block Relay contract, which accepts it by majority.
-3. She later constructs a PoI for the header she inserted in the block relay, aiming at verifying the result of her interest.
-4. The WBI accepts it and stores it as the result to the data request, while the true result remains unreported.
+1. She can preconstruct a header including a result of a data request of her interest that was previously posted to the WBI. She can even make up a beneficial Active Reputation Set (ARS) and report it with the header. She reports the block header to the Block Relay contract, which accepts it by majority.
+2. She later constructs a PoI for the header she inserted in the block relay, aiming at verifying the result of her interest.
+3. The WBI accepts it and stores it as the result to the data request, while the true result remains unreported.
 
-The aforementioned problem stems from the fact that the blocks reported by non-reputed sybil bridge nodes were accepted as valid candidates. As the consensus in Witnet is decided through the reputation system, it is expected that the block relay also needs to utilize such information in some way to achieve a higher degree of security. We can expect that information can be inserted in the block relay reported as, e.g., the merkle root of all ordered reputation scores, and later prioritize based on the score they hold in the reputation set. The first thing to note is that the efficiency of this approach is rather low, as to demonstrate its membership to a position in the reputation set each of the reporters would need to sign the block, making the verification costly in Ethereum. Second, the most reputed node could report any block header of its convenience, and it would still be successful. Third, as the number of identities increases the proof of membership to the reputation set also becomes more expensive in Ethereum. These challenges can be solved in the following way:
+## Proposed Solution
 
-- In order to offer a more efficient approach, we can randomly select a subset of bridge nodes that will be reporting the block headers.
-- We should avoid trusting a single entity, even if it is a high reputed one. As such, there needs to be some kind of agreement/consensus between several reporters.
-- In order to enhance participation in the Witnet protocol and reduce the potential depth of a PoI verification in the bridge, we can merklelize only the ARS instead of the whole set. Thus, we can select a subset of the last ARS who will be in charge of reporting block headers.
-- The ARS is limited with respect to the velocity of the Witnet network. The more data requests are inserted, the more members will be in the ARS.
-- The ARS will likely contain active nodes with rather high reputation, and thus we can assume they will have an interest on being honest.
+In the end our main problem resides on the fact that we need a set of nodes to agree on a state. We solve this problem, as the majority of the PoS systems, by utilizing a BFT algorithm. A review on the Byzantine Generals Problem and some of the BFT approaches, specially with respect to finality in PoS systems, can be found [here][BFT_finality].
 
-## Proof of Membership
+### Voting Committee
+As with any other BFT approach, the first thing we need to do is define the committee that will reach an agreement. In PoS systems these committee is often referred as the **validator set**. It is clear that only Witnet nodes know the state of the chain, so here are our options:
+
+- __Bridge nodes__: The main issue when we set the bridge nodes as our committee is that these are easily sybileable. The number of bridge nodes is expected to be substantially lower than the number of nodes in Witnet. Thus, a malicious attacker can just spin up the necessary nodes to take over the entire bridge node set and insert a fake header aiming at reporting a fake result.
+- __Witnet known Identities__: Instead, we could let every identity that participated in Witnet vote for the correct chain tip. We foresee two main issues with this approach. First, again this approach is sybileable, as the only thing the attacker would need to do is spin up the necessary nodes and participate at least once in any of the tasks in Witnet. Second, the block relay should retain every single header to check voters participations.
+- __Active Reputation Set__: The third approach is to let the Active Reputation Set (ARS) define the current chain tip. The ARS defines the most recent (2000 epochs) participants in Witnet. Clearly this is the most difficult to be attacked by an attacker. First, as with any BFT approach, we can assume that 2/3 of the reputation will reside in hands of honest nodes, and it is likely that the ARS will contain nodes with high reputation, thus having an interest on being honest. But further, we implemented collateralization and coin-age countermeasures that harden the possibility of colliding 1/3 of malicious actors in the ARS. Thus, it is expected that the integrity of the ARS is guaranteed and therefore the ARS members should be in charge of reporting the chain tip. This ARS is limited with respect to the velocity of the Witnet network, thus making even more difficult and costly to sybil it. 
+
+In order to secure the block relay we should thus trust the committee that is more costly to sybilize, in our case the ARS. hus, the ARS at epoch i-1 defines the committee at epoch i. However, we still need to prove to the block relay that a certain ARS identity voted for some chain tip B. In order to do so, we define __Proof of Membership__.
+
+### Proof of Membership
 
 In this section we formally define Proof of Membership, i.e., the ability of a Witnet node to demonstrate it was part of the ARS at a specific point in time. In order to provide this capability, we need the inclusion of the merkle root of the Active Reputation Set (ARS). The leaves are the public keys of those members in the ARS. Remember that the ARS is defined as the participants that have been actively working for the Witnet network, in the form of witnessing or mining, in the last N epochs (where N is a protocol parameter). As such, if a Witnet node needs to prove its membership to the ARS at a specific point in time it needs to provide:
 
@@ -43,66 +47,71 @@ In order to verify the validity of the proof of membership, the verifier needs t
 1. Verifies that the public key and the siblings lead to the merkle root provided
 2. Verifies the signature to check that the prover is indeed in possesion of the corresponding private key.
 
-## Relaying blocks
+### Finality in Block Relay
+The algorithm that suits better for Witnet is Grandpa. The reasons behind those are:
+- First, we need to be aware that we might not achieve  immediate finality on a particular block header, and as such, that we need to continue growing the chain until we see that a particular ancestor achieves 2/3 of the votes. 
+- Further, we need to realize that in that case ARS members in descendants might have changed. Although it is not expected to change substantially, even in that case, the only consequence would be that the block would be finalized once they come back to the ARS.
+- With Grandpa, only the ARS members for the current epoch need to sign the last beacon/block. The rest of the nodes in the network do not need to sign the last beacon, as it would be the case in Casper FFG and Cosmos.
+- With Casper FFG we would be enforcing the ARS to vote each epoch until 2/3 are reached. That means that at each epoch every node in the network needs to cast a vote, or in the best case, everybody who was in the ARS in the last N epochs.
 
-We divide the process of relaying blocks in different phases to be implemented in the process of building a decentralized efficient block relay. However, each of the phases will share the API to which bridge nodes connect, aiming at offering the most ergonomic updating process to the bridge nodes.
+- With Tendermint, ARS members would be stuck until they reach a 2/3 consensus. This, in addition to reproduce the problem we explained with casper FFG, also halts the network if more than 1/3 goes offline.
 
-### Stage 1: ARS voting
+GRANPA stands for GHOST-based Recursive Ancestor Deriving Prefix Agreement and the idea is similar to LMD-Ghost in Casper CBC: when having a fork, the last blocks signed by the validators are checked, and the heaviest is considerd the valid one and so the chain in which it is. In GRANDPA a chain signed by sufficient validators consolidates its ancestor.
+In particular, suppose there is a fork in the blockchain, the chains continue aggregating blocks (when validators sign those blocks) and by the time one of the chains is signed by 2/3 of the validator set the first block is confirmed.
 
-Stage 1 requires the ARS members to vote for the correct block hash candidate in the block relay. This is, all nodes interested on the healthiness of the system need to run both an Ethereum client and a Witnet node to become witnesses and bridge nodes at the same time. 
+In Witnet, validators are the  members of the ARS, which, as mentioned before, could change from one epoch to another. Suppose at epoch *t* a block *B<sub>t</sub>* is singed by less than the 2/3 of the ARS, then it will be validated when 2/3 of that ARS sign its descendants. Notice that even if the ARS changes, the change is not substancial and the members tend to reappear in the ARS. So as the chain grows at some point at least 2/3 will have vote from epoch *t* and due to safety they will agree on the same chain, validating block *B<sub>t</sub>*.  More formally:
 
-In this case, the block hash candidate that received more votes from the ARS is the one that is consolidated. As said before, we expect the ARS members to be those that have higher reputation and in consequence to be those more interested in having a good block relay.
+<p align=center>
+<img src="./images/safety_liveness.png" width="750">
+</p>
+<p align=center>
+<em>Fig. 1: Finality of GRANDPA based on ARS member votes</em>
+</p>
 
-The main drawbacks in this stage are obvious. First, the fact of having to run both the Ethereum client and the Witnet node. Second, if an attacker inserts quite a few of data requests she can introduce a bunch of her potentially sybil identities in the ARS. In this particular case, she can obtain majority in the voting of the block hash tip. These problems get solved in future stages.
+Proof: Condition 1. is given by BFT, since at most 1/3 are dishonest. Condition 2. on the other hand is given by the construction of the ARS in which nodes are incentivize to stay on-line. Because of this, due to the fact that members of the ARS are the most reputated nodes we can suppose that at least 2/3 of them will have an honest behaviour and so they will be selected as part of the ARS in the next epochs.
 
-### Stage 2: weighted ARS voting
+Let's see an example of how this would work in Witnet. Suppose we have 100 nodes in the ARS at epoch *t*, from who, 30 sign a block ad 20 another one, as in the next figure:
 
-In this stage, the influence on the voting of the block header hash is weighted according to the reputation that ARS members have. However, in order to avoid the situation in which a single identity can heavily influence the voting, we can instead weight votes by the position they hold in the ARS. For instance, one could make sure that the first 25% copes with the remaining 75% of the ARS. This way, in order to influence the voting a potential attacker needs to influence the top 25% or the lower 75% of the ARS. Further, an attacker not only needs to place more than 50% of identities in the ARS but rather she also needs to become either the top reputed entities.
+<p align=center>
+<img src="./images/fork_grandpa_1.png" width="750">
+</p>
+<p align=center>
+<em>Fig. 2: Fork in the block relay</em>
+</p>
 
-### Stage 2.5: collateralized voting (?)
+As none of the blocks got 2/3 of the ARS none is set as final and both chains continue growing. In epoch *t*+1 the first chain gets another 10 signatures form the ARS of epoch *t*, reaching 30 signatures while the second chain gets 15 new signatures, 45 signatures in total. As in epoch *t*, none of them gets enough support.
+However, in epoch *t*+2, the second chain sums another 25 signatures, reaching 70 signatures of the 100 members of the ARS in epoch *t*, and so more than the 2/3 necessary. This way the second block proposed in epoch *t* is considered valid, as one can see in the figure that follows. This mechanism is repeated for the next block, this time taking into consideration the ARS of epoch *t*+1, that may differ from the ARS in the previous epoch.
 
-Additional to previous stages, the voting scheme may include a collateral in order to increase the incentives of being honest. Those behaving dishonestly (i.e. reporting fake block headers) will lose their collateral, which may be distributed among honest reporters or even be burned.
+<p align=center>
+<img src="./images/fork_grandpa_2.png" width="750">
+</p>
+<p align=center>
+<em>Fig. 3: The bottom chain signatures validate the block at time t as it achieves 2/3s</em>
+</p>
 
-### Stage 3: BLS signatures
-
-The aforementioned approach has a big drawback: witnesses need also to act as bridge nodes to ensure the security of the protocol. A different proposal might be that the voting is based on aggregated signatures(BLS). In this case, ARS nodes could just send the last header they know about signed with BLS, and the bridge node would just need to aggregate those signatures. With BLS signatures, it would only take one verification in the block relay contract to verify all the aggregated signatures from the ARS. At this stage, VRFs in the WBI would still be performed with the curve secp256k1, but `LAST_BEACON` messages would be signed with BLS. In addition, BLS signatures are subsidized in Ethereum (?), thus reducing further the cost.
-
-https://crypto.stackexchange.com/questions/53509/can-the-precompiles-in-ethereum-byzantium-for-pairings-be-used-for-implementation
-
-https://ethresear.ch/t/pragmatic-signature-aggregation-with-bls/2105
+### Improving Efficiency through aggregated signatures
 
 <p align=center>
 <img src="./images/bls.png" width="750">
 </p>
 <p align=center>
-<em>Fig. 1: Signature aggregation and its posibilities for the block relay</em>
+<em>Fig. 4: ARS signatures are aggregated so that a single verification is performed in the block relay</em>
 </p>
 
-### Stage 4: replace VRF by BLS
+The aforementioned approach has a big drawback: it would take 1000 verifications to verify 1000 ARS members signatures. We always pursue a gas-driven design, i.e., a design that decreases the gas cost in Ethereum. Clearly verifying one by one the signatures imposes a prohibitive gas cost. A different proposal might be that the voting is based on aggregated signatures. [This document][Aggregated-sigs] describes different approaches that can be taken to aggregate signatures. In this case, ARS nodes could just send the last header they know about signed, and the bridge node would just need to aggregate those signatures. Among our posibilities we choose BLS signatures for two main reasons. First, our committee size is varying and therefore it becomes substantially difficult to apply Schnorr. Further, BLS signatures will be utilized by Eth2.0 and are subsidized, thus reducing further the cost.
 
-[To be completed after assessment]
+<p align=center>
+<img src="./images/precompiles.png" width="750">
+</p>
+<p align=center>
+<em>Fig. 5: Pre-compiles in Byzantum</em>
+</p>
 
-As aforementioned, stage 3 requires BLS signatures by Witnet nodes. Taking into account that BLS signatures are deterministic, there is a clear opportunity of using BLSs instead of VRFs for computing Proof of Eligibilities (PoEs). This is possible due to the fact that PoEs have fixed inputs for all participating nodes (e.g. data request identifier and beacon).
+With BLS signatures, it would only take one verification in the block relay contract to verify all the aggregated signatures from the ARS. At this stage, VRFs in the WBI would still be performed with the curve secp256k1, but `LAST_BEACON` messages would be signed with BLS.
 
-However, before replacing VRF with BLS, it is required to perform a further analysis about the following topics and concerns:
+### Economic Incentive: fee as low as possible
 
-- Efficiency of BLS compared to VRF, both in Witnet nodes and Ethereum Smart Contracts (EVM).
-- Assessment of potential changes in the Witnet, both in the Witnet transaction model (e.g. commit transactions).
-- Assessment about potential impacts in the P2P network, more specifically in the `LAST_BEACON` message exchanges among peers.
-- Assess maturity of BLS (e.g. pairing functions) in terms of crypto analysis (e.g. known attacks and vulnerabilities).
-
-### Stage 5: dispute resolution (?)
-
-[To be completed]
-
-Things to do:
-
-- Assess if dispute mechanism if required
-- Assess how the Block Relay could recover from a fork
-
-## Economic Incentive: fee as low as possible
-
-Another aspect that the block relay needs to cover is the fact that nodes will have an economic incentive to report blocks, and they should not be able to set the fee as high as to make the data request non-executable. In order to cope with that we propose an inverse auction: the lowest price reported by a bridge node is the one that is set as the fee. However, we still reward all bridge nodes that participated in the correct block header consensus reporting. We apply proportionality as to how deviated the reports were with respect to the minimum. Let's work through an example:
+Another aspect that the block relay needs to cover is the fact that nodes will have an economic incentive to report blocks (any transaction verified in a block reported by them implies a reward), and they should not be able to set the reward as high as to make the data request non-executable. In order to cope with that we propose an inverse auction: the lowest price reported by a bridge node is the one that is set as the fee. However, we still reward all bridge nodes that participated in the correct block header consensus reporting. We apply proportionality as to how deviated the reports were with respect to the minimum. Let's work through an example:
 
 - Imagine both Alice and Bob report the same correct block header to the block relay.
 - Alice sets a report reward fee of 1 ETH, while Bob sets the fee as 9 ETH.
@@ -121,13 +130,57 @@ where |X| = x<sub>1</sub>, x<sub>2</sub>, ..., x<sub>N</sub> and each x<sub>i</s
 
 With this scheme all nodes are incentivized to set the fees as low as possible in favor of price competition. Ideally, all bridge nodes would set it low enough (taking into account the transaction gas and potential benefit derived from the WBI) so that they get an equal share of the rewards.
 
+## Stages
 
-<hr/>
+We divide the process of relaying blocks in different phases to be implemented in the process of building a decentralized efficient block relay. However, each of the phases will share the API to which bridge nodes connect, aiming at offering the most ergonomic updating process to the bridge nodes.
 
-## Borrar?
+### Stage 1: ARS voting
 
-#### Disputes
+Stage 1 requires the ARS members to vote for the correct block hash candidate in the block relay. This is, all nodes interested on the healthiness of the system need to run both an Ethereum client and a Witnet node to become witnesses and bridge nodes at the same time. This stage includes the merklelization of the ARS as well as the proof of membership verification.
 
-The next question is how do we dispute a potential fork of two block headers. This can be done by considering the ARS before the fork, and consolidate the block header that was supported/extended by more members of that ARS. In this case, the attacker would need to monopolize/bribe a majority of the ARS, e.g., perform a playbook attack, in which case she already can flip the result of a data request. In this case we define a dispute period of l, after which the block is considered consolidated. Of course, the validity of a block at time t needs to be voted and validated by those in the ARS of the preceding block (vuelta de tuerca). (the random number serves for all?). Maybe as Ethereum has 4 epochs compared to Witnet, we can use those 4 iterations to select N different ARS participants on each. These could actually stake some amount that will be slashed if the reported block does not become final.
+In this case, the block hash candidate that received more votes from the ARS is the one that is consolidated. As said before, we expect the ARS members to be those that have higher reputation and in consequence to be those more interested in having a good block relay.
 
-The aforementioned approach has a big drawback: witnesses need also to act as bridge nodes to ensure the security of the protocol. Although our first version might include such a drawbackf, a different proposal might be that if there is a fork, due to a malicious block reported, reconciliations can be performed based on aggregated signatures or reporting (BLS).  For instance, if the correct block in the fork can be backed up by as many nodes in the previous ARS as possible by signing it. With BLS signatures, it would only take one verification in the block relay contract to verify all the aggregated signatures from the ARS. However, this involves changing the curve in the Witnet protocol as well as the VRF verification, something that should be thought carefully.
+### Stage 1.5: Weighted ARS voting
+
+In this stage, the influence on the voting of the block header hash is weighted according to the reputation that ARS members have. However, in order to avoid the situation in which a single identity can heavily influence the voting, we can instead weight votes by the position they hold in the ARS. For instance, one could make sure that the first 25% copes with the remaining 75% of the ARS. This way, in order to influence the voting a potential attacker needs to influence the top 25% or the lower 75% of the ARS. Further, an attacker not only needs to place more than 50% of identities in the ARS but rather she also needs to become either the top reputed entities.
+
+### Stage 2: collateralized voting (?)
+
+Additional to previous stages, the voting scheme may include a collateral in order to increase the incentives of being honest. Those behaving dishonestly (i.e. reporting block headers that end up not being canonical) will lose their collateral, which may be distributed among honest reporters or even be burned.
+
+### Stage 3: BLS signatures
+
+The third phase can be divided in two main purposes. First, the implementation of BLS signatures in Witnet, such that ARS members can vote for the chain tip and witnet bridge nodes can aggregate signatures. Second, the verification implementation in the Block Relay where a single signature verification is enough to verify the aggregated signatures. In this stage, the chain tip is still decided by majority in the block relay, but a single verification is enough to verify the belonging to the ARS.
+
+A pre-assessment about potential impacts in the P2P network will be made, more specifically in the `LAST_BEACON` message exchanges among peers.
+
+
+### Stage 4: Implement Finality Gadget
+
+In this stage the finality gadget is implemented in the Block Relay, such that a block is considered final only if 2/3 of the current ARS voted for it or their descendants. If not, the block relay stores both chain tips until one of them is decided.
+
+Additionally, the bridge node needs to implement a smart key signing in which all signatures belonging to the ARS of the last non-finalized block or their descendants.
+
+Further, the bridge node needs to be able to insert penalization transactions in Witnet whenever it sees a slashable behavior, such as voting for two chain tips within the same epoch. The slashing will imply a reduction of reputation points of those that double-voted.
+
+### Stage 5: Replace VRF by BLS
+
+[To be completed after assessment]
+
+As aforementioned, stage 3 requires BLS signatures by Witnet nodes. Taking into account that BLS signatures are deterministic, there is a clear opportunity of using BLSs instead of VRFs for computing Proof of Eligibilities (PoEs). This is possible due to the fact that PoEs have fixed inputs for all participating nodes (e.g. data request identifier and beacon).
+
+However, before replacing VRF with BLS, it is required to perform a further analysis about the following topics and concerns:
+
+- Efficiency of BLS compared to VRF, both in Witnet nodes and Ethereum Smart Contracts (EVM).
+- Assessment of potential changes in the Witnet, both in the Witnet transaction model (e.g. commit transactions).
+- Assess maturity of BLS (e.g. pairing functions) in terms of crypto analysis (e.g. known attacks and vulnerabilities).
+
+### Stage 6: Evaluate a hard-fork/dispute mechanism to recover
+
+Things to do:
+
+- Assess if dispute mechanism if required
+- Assess how the Block Relay could recover from a fork
+
+[Aggregated-sigs]: ./aggregated_signatures.md
+[BFT]: ./BFT_finality.md
